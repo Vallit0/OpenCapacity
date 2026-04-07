@@ -1,0 +1,74 @@
+SetProp, 1E050,   -1E050, 1E050, -1E050, 16777215, 16777215, 0, 4
+NoScales,
+Caption, "Vsource.SOURCE Currents"
+ChartCaption, "Vsource.SOURCE Currents"
+Rect, 100, 10, 200, 50
+Label, 150, 15, 0, "Vsource.SOURCE", 0
+BoldLabel, 1
+Width, 7
+DataColor, 8421504
+Move, 0, 0
+Draw, 300, 0
+DataColor, 0
+Width, 3
+FStyle, 0
+Move, 0, 40
+Draw, 100, 40
+Center,  15, 42, 10, "15.0515"
+Center,  60, 42, 10, " /_   176.26"
+Center,  90, 42, 10, " ->"
+FStyle, 0
+Move, 0, 30
+Draw, 100, 30
+Center,  15, 32, 10, "16.9422"
+Center,  60, 32, 10, " /_    73.10"
+Center,  90, 32, 10, " ->"
+FStyle, 0
+Move, 0, 20
+Draw, 100, 20
+Center,  15, 22, 10, "19.9357"
+Center,  60, 22, 10, " /_   -59.58"
+Center,  90, 22, 10, " ->"
+Width, 1
+FStyle, 0
+Move, 0, -10
+Draw, 100, -10
+Center,  15, -8, 10, "6.47724E-011"
+Center,  60, -8, 10, " /_  -141.84"
+Center,  90, -8, 10, " ->"
+Width, 7
+Move, -5, 5
+Draw, -5, 45
+Center,  25, 50, 10, "SOURCEBUS"
+Width, 3
+FStyle, 0
+Move, 300, 40
+Draw, 200, 40
+Center,  210, 42, 10, "<- "
+Center,  240, 42, 10, "15.0515"
+Center,  280, 42, 10, " /_    -3.74"
+FStyle, 0
+Move, 300, 30
+Draw, 200, 30
+Center,  210, 32, 10, "<- "
+Center,  240, 32, 10, "16.9422"
+Center,  280, 32, 10, " /_  -106.90"
+FStyle, 0
+Move, 300, 20
+Draw, 200, 20
+Center,  210, 22, 10, "<- "
+Center,  240, 22, 10, "19.9357"
+Center,  280, 22, 10, " /_   120.42"
+Width, 1
+FStyle, 0
+Move, 300, -10
+Draw, 200, -10
+Center,  210, -8, 10, "<- "
+Center,  240, -8, 10, "6.47724E-011"
+Center,  280, -8, 10, " /_    38.16"
+Width, 7
+Move, 305, 5
+Draw, 305, 45
+Center,  275, 50, 10, "SOURCEBUS.0.0.0"
+Caption, " Currents"
+PctRim, 5

@@ -1,0 +1,9 @@
+
+/* dashed drop area */
+.dashed-zone {
+  border: 2px dashed #6c757d;
+  border-radius: .5rem;
+  padding: 1.25rem;
+  text-align: center;
+  color: #6c757d;
+}
