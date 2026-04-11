@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(file *.docx *.txt)",
+      "Bash(grep -E \"\\\\.\\(xlsx|pbix|docx\\)$\")"
+    ]
+  }
+}
