@@ -51,38 +51,8 @@ El HTML, los callbacks, la logica de simulacion, el calculo de perdidas y la bus
 
 ### La arquitectura objetivo
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        INTERNET / CLIENTE                        │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │ HTTPS
-┌─────────────────────────────▼───────────────────────────────────┐
-│                         NGINX (reverse proxy)                    │
-│                    Termina SSL, balancea carga                   │
-└──────────┬──────────────────────────────────┬───────────────────┘
-           │ /api/*                            │ /*
-┌──────────▼──────────┐             ┌──────────▼──────────────────┐
-│    FastAPI (Python) │             │   Frontend (React / Next.js) │
-│    Uvicorn ASGI     │             │   Plotly.js, Recharts         │
-│    Puerto 8000      │             │   Puerto 3000 / estatico      │
-└──────────┬──────────┘             └─────────────────────────────┘
-           │
-     ┌─────┴──────────────────────┐
-     │                            │
-┌────▼────────┐          ┌────────▼────────┐
-│    Redis    │          │   PostgreSQL     │
-│  (broker    │          │  (resultados,    │
-│  + cache)   │          │   historial)     │
-└────┬────────┘          └─────────────────┘
-     │
-┌────▼────────────────────────────────────┐
-│           Celery Workers (N instancias)  │
-│                                          │
-│  Worker 1: su propia instancia OpenDSS   │
-│  Worker 2: su propia instancia OpenDSS   │
-│  Worker N: su propia instancia OpenDSS   │
-└──────────────────────────────────────────┘
-```
+<img width="478" height="811" alt="image" src="https://github.com/user-attachments/assets/e80600d5-9615-40cb-a028-c9b595f4b8fb" />
+
 
 Cada componente vive en su propio container Docker. El motor OpenDSS solo existe dentro de los workers de Celery, jamas en el proceso de FastAPI. Cada worker tiene su propia instancia aislada.
 
