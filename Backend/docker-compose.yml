@@ -1,0 +1,120 @@
+# =============================================================================
+# docker-compose.yml — Entorno de DESARROLLO local
+#
+# Levanta todos los servicios necesarios:
+#   api       FastAPI con hot-reload
+#   worker    Celery worker con OpenDSS (concurrency=1)
+#   redis     Broker + cache de circuitos
+#   postgres  Persistencia de resultados
+#   flower    Dashboard de monitoreo de Celery (solo dev)
+#
+# Uso:
+#   docker-compose up -d                  Levantar todos los servicios
+#   docker-compose up --scale worker=3    Escalar a 3 workers
+#   docker-compose logs -f api            Ver logs de la API
+#   docker-compose exec api bash          Shell en el container de la API
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # API — FastAPI con hot-reload para desarrollo
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Hot-reload: los cambios en ./app/ se reflejan sin reconstruir
+      - ./app:/app/app
+    # En desarrollo usar --reload; en produccion se usa el CMD del Dockerfile
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Worker — Celery con OpenDSS
+  # CRITICO: concurrency=1 en el comando y en el Dockerfile.
+  # Para mas paralelismo: docker-compose up --scale worker=N
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/hosting_capacity
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — Broker de Celery + cache de circuitos
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    # Limitar uso de memoria en desarrollo
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — Persistencia de resultados de Hosting Capacity y simulaciones
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: hosting_capacity
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Flower — Dashboard de monitoreo de Celery (solo desarrollo)
+  # Acceder en http://localhost:5555
+  # ---------------------------------------------------------------------------
+  flower:
+    image: mher/flower:2.0
+    command: celery flower --broker=redis://redis:6379/1 --port=5555
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

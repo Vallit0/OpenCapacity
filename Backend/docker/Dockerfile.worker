@@ -1,0 +1,50 @@
+# =============================================================================
+# Imagen para los workers de Celery con OpenDSS
+#
+# CRITICO: Este es el unico container que puede importar opendssdirect.
+# El proceso API NUNCA debe importar este modulo.
+#
+# Imagen base: python:3.11-slim-bookworm (Debian 12 slim).
+# Es la combinacion con mejor soporte comprobado para opendssdirect.py.
+# NO usar Alpine Linux — usa musl libc y los binarios de OpenDSS requieren glibc.
+# =============================================================================
+
+FROM python:3.11-slim-bookworm
+
+LABEL maintainer="OpenCapacity Team"
+LABEL description="Celery worker con OpenDSS — Hosting Capacity"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Dependencias del sistema requeridas por opendssdirect.py:
+#   libgomp1    — runtime de OpenMP (obligatorio)
+#   libgfortran5 — runtime de Fortran (solucionador lineal)
+#   libopenblas0 — algebra lineal densa
+#   libstdc++6   — C++ runtime (ya incluido en slim, pero garantizado aqui)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libgfortran5 \
+    libopenblas0 \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Verificar que opendssdirect funciona en tiempo de BUILD, no de runtime.
+# Este paso detecta problemas de dependencias nativas antes de desplegar.
+RUN python -c "import opendssdirect as dss; dss.Basic.Start(0); print('OpenDSS OK')"
+
+COPY app/ ./app/
+
+# Comando de produccion:
+#   --concurrency=1   NUNCA cambiar. OpenDSS no es thread-safe.
+#                     Para paralelismo real, escalar el numero de containers.
+#   --queues          Atiende tanto calculos de hosting capacity como simulaciones
+CMD ["celery", "-A", "app.tasks.celery_app", "worker", \
+     "--loglevel=info", \
+     "--concurrency=1", \
+     "--queues=hosting_capacity,simulation"]

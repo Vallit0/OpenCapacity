@@ -1,0 +1,37 @@
+# =============================================================================
+# requirements.txt — Dependencias del backend de Hosting Capacity
+#
+# Stack definido en ROAD_TO_BACKEND.md, seccion 3 — Stack Tecnologico.
+# Versiones minimas especificadas; pip instalara la ultima compatible.
+# =============================================================================
+
+# --- Framework API -----------------------------------------------------------
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0         # Servidor ASGI de produccion
+pydantic>=2.0.0                   # Validacion (incluido con FastAPI)
+pydantic-settings>=2.0.0          # Settings desde variables de entorno
+
+# --- Motor de simulacion -----------------------------------------------------
+# NOTA: opendssdirect requiere dependencias del sistema en Linux.
+# Ver docker/Dockerfile.worker para la lista de paquetes apt.
+# En macOS M1/M2 y Windows funciona sin paquetes adicionales.
+opendssdirect.py>=0.8.0
+
+# --- Cola de tareas ----------------------------------------------------------
+celery[redis]>=5.3.0
+redis>=5.0.0                      # Cliente Python para Redis
+
+# --- Base de datos -----------------------------------------------------------
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0            # Driver PostgreSQL
+alembic>=1.13.0                   # Migraciones de esquema
+
+# --- Exportacion -------------------------------------------------------------
+openpyxl>=3.1.0                   # Escritura de archivos Excel (.xlsx)
+pandas>=2.0.0                     # Manipulacion de datos (opcional, para pivot)
+
+# --- Testing -----------------------------------------------------------------
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0                     # Cliente HTTP para TestClient de FastAPI
+python-multipart>=0.0.22

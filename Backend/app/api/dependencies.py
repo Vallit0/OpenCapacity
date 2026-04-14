@@ -1,0 +1,76 @@
+"""
+Dependencias compartidas para los routers de FastAPI.
+
+Proveen conexiones a Redis y PostgreSQL como dependencias inyectables,
+manteniendo el ciclo de vida de las conexiones correctamente.
+"""
+from typing import Generator
+
+import redis as redis_lib
+from fastapi import HTTPException, status
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.config import settings
+
+# ---------------------------------------------------------------------------
+# PostgreSQL
+# ---------------------------------------------------------------------------
+
+_engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,  # Detecta conexiones muertas antes de usarlas
+    pool_size=5,
+    max_overflow=10,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
+
+
+def get_db() -> Generator[Session, None, None]:
+    """Dependencia FastAPI que provee una sesion de base de datos."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Redis
+# ---------------------------------------------------------------------------
+
+
+def get_redis() -> redis_lib.Redis:
+    """Retorna un cliente Redis con decode_responses=True."""
+    return redis_lib.from_url(settings.REDIS_URL, decode_responses=True)
+
+
+# ---------------------------------------------------------------------------
+# Helpers comunes para rutas
+# ---------------------------------------------------------------------------
+
+
+def require_circuit(circuit_id: str, r: redis_lib.Redis) -> dict:
+    """
+    Verifica que el circuit_id exista en Redis y retorna sus datos.
+    Lanza HTTPException 404 si no existe o expiro.
+    """
+    dss_content = r.get(f"circuit:{circuit_id}:dss")
+    if not dss_content:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "CIRCUIT_NOT_FOUND",
+                "message": "El circuit_id no existe o ha expirado.",
+                "suggestion": (
+                    "Vuelva a cargar el archivo DSS mediante "
+                    "POST /api/v1/circuit/upload"
+                ),
+            },
+        )
+    linecodes_content = r.get(f"circuit:{circuit_id}:linecodes")
+    return {
+        "dss_content": dss_content,
+        "linecodes_content": linecodes_content,
+    }

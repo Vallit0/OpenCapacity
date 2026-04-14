@@ -1,0 +1,45 @@
+# =============================================================================
+# Imagen para el servidor FastAPI
+#
+# No incluye OpenDSS. El proceso API nunca toca opendssdirect.
+# La logica pesada (simulaciones, busqueda binaria) corre en Dockerfile.worker.
+# =============================================================================
+
+FROM python:3.11-slim-bookworm
+
+# Metadatos
+LABEL maintainer="OpenCapacity Team"
+LABEL description="FastAPI server — Hosting Capacity API"
+
+# Deshabilitar bytecode (.pyc) y buffering de stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Instalar dependencias del sistema (minimas — sin OpenDSS)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar solo requirements primero para aprovechar la cache de capas Docker
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar el codigo fuente de la aplicacion
+COPY app/ ./app/
+
+# Exponer el puerto del servidor ASGI
+EXPOSE 8000
+
+# Health check del container (Docker/Compose lo usa para depends_on)
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/api/v1/health || exit 1
+
+# Comando de produccion: 4 workers Uvicorn
+# En docker-compose.yml de desarrollo se sobreescribe con --reload
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "4", \
+     "--timeout-keep-alive", "65"]
