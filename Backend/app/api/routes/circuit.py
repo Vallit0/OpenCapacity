@@ -14,11 +14,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
 from app.api.dependencies import get_redis, require_circuit
 from app.config import settings
-from app.core.dss_engine import (
-    CircuitDidNotConvergeError,
-    DSSEngine,
-    DSSEngineError,
-)
+from app.core.dss_engine import CircuitDidNotConvergeError, DSSEngine, DSSEngineError
 
 router = APIRouter()
 
@@ -81,8 +77,12 @@ async def upload_circuit(
             },
         ) from exc
 
-    # Obtener buses y fases disponibles
+    # Obtener todos los datos de análisis mientras el engine está caliente
+    import json
     buses_phases = engine.get_buses_phases()
+    voltage_profile = engine.get_voltage_profile()
+    lines_info = engine.get_lines_info()
+    elements, losses_summary = engine.get_losses()
 
     # Persistir en Redis con TTL
     circuit_id = f"ckt_{uuid.uuid4().hex[:12]}"
@@ -94,8 +94,6 @@ async def upload_circuit(
             settings.CIRCUIT_TTL_SECONDS,
             linecodes_content,
         )
-    # Guardar metadatos del circuito para GET /{circuit_id}
-    import json
     r.setex(
         f"circuit:{circuit_id}:info",
         settings.CIRCUIT_TTL_SECONDS,
@@ -105,6 +103,22 @@ async def upload_circuit(
         f"circuit:{circuit_id}:buses_phases",
         settings.CIRCUIT_TTL_SECONDS,
         json.dumps({k: list(v) for k, v in buses_phases.items()}),
+    )
+    # Cache de análisis base — los endpoints de análisis leen de aquí (sin recompilar)
+    r.setex(
+        f"circuit:{circuit_id}:voltage_profile",
+        settings.CIRCUIT_TTL_SECONDS,
+        json.dumps(voltage_profile),
+    )
+    r.setex(
+        f"circuit:{circuit_id}:lines",
+        settings.CIRCUIT_TTL_SECONDS,
+        json.dumps(lines_info),
+    )
+    r.setex(
+        f"circuit:{circuit_id}:losses",
+        settings.CIRCUIT_TTL_SECONDS,
+        json.dumps({"elements": elements, "summary": losses_summary}),
     )
 
     expires_at = (
@@ -142,21 +156,10 @@ def get_circuit(circuit_id: str):
         datetime.datetime.utcnow() + datetime.timedelta(seconds=max(ttl, 0))
     ).isoformat() + "Z"
 
-    # Reconstruir info de lineas sin recompilar (usamos el engine con el contenido guardado)
-    try:
-        engine = DSSEngine()
-        engine.load_circuit(
-            circuit_data["dss_content"], circuit_data["linecodes_content"]
-        )
-        lines = engine.get_lines_info()
-    except Exception:
-        lines = []
-
     return {
         "circuit_id": circuit_id,
         **info,
         "buses_phases": buses_phases,
-        "lines": lines,
         "expires_at": expires_at,
     }
 

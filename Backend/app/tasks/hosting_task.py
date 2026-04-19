@@ -261,11 +261,11 @@ def _binary_search(
     while low <= high:
         mid = (low + high) // 2
         engine.reset_circuit(dss_content, linecodes_content)
-        engine._dss.Text.Command = (
+        engine._dss.Text.Command(
             f"New Generator.GD Bus1={bus}.{phase} Phases=1 "
             f"kV={kv_ln:.3f} kW={mid} kvar=0 Model=1"
         )
-        engine._dss.Text.Command = "Solve"
+        engine._dss.Text.Command("Solve")
 
         if not engine._dss.Solution.Converged():
             # No convergencia = violacion implicita; bajar potencia
@@ -302,11 +302,11 @@ def _determine_limiting_constraint(
     """
     test_kw = max_kw + 1
     engine.reset_circuit(dss_content, linecodes_content)
-    engine._dss.Text.Command = (
+    engine._dss.Text.Command(
         f"New Generator.GD Bus1={bus}.{phase} Phases=1 "
         f"kV={kv_ln:.3f} kW={test_kw} kvar=0 Model=1"
     )
-    engine._dss.Text.Command = "Solve"
+    engine._dss.Text.Command("Solve")
 
     if not engine._dss.Solution.Converged():
         return "convergence"
