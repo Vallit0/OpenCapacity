@@ -12,6 +12,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # PostgreSQL
@@ -19,7 +22,7 @@ from app.config import settings
 
 _engine = create_engine(
     settings.DATABASE_URL,
-    pool_pre_ping=True,  # Detecta conexiones muertas antes de usarlas
+    pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
 )
@@ -58,6 +61,7 @@ def require_circuit(circuit_id: str, r: redis_lib.Redis) -> dict:
     """
     dss_content = r.get(f"circuit:{circuit_id}:dss")
     if not dss_content:
+        logger.warning("circuit NOT FOUND | circuit_id=%s (expirado o nunca subido)", circuit_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
@@ -69,6 +73,7 @@ def require_circuit(circuit_id: str, r: redis_lib.Redis) -> dict:
                 ),
             },
         )
+    logger.debug("circuit OK | circuit_id=%s", circuit_id)
     linecodes_content = r.get(f"circuit:{circuit_id}:linecodes")
     return {
         "dss_content": dss_content,

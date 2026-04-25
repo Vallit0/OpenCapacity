@@ -7,6 +7,8 @@ instancia del motor. Con concurrency=1 y multiples replicas del container
 se obtiene paralelismo real sin colisiones entre tareas.
 """
 from celery import Celery
+from celery.signals import worker_process_init
+
 from app.config import settings
 
 celery_app = Celery(
@@ -23,8 +25,6 @@ celery_app.conf.update(
     accept_content=["json"],
 
     # --- Timeouts -----------------------------------------------------------
-    # 1 hora para la busqueda binaria en circuitos grandes.
-    # SoftTimeLimitExceeded se lanza 5 minutos antes para guardar resultados parciales.
     task_time_limit=settings.CELERY_TASK_TIMEOUT_SECONDS,
     task_soft_time_limit=settings.CELERY_TASK_TIMEOUT_SECONDS - 300,
 
@@ -52,3 +52,23 @@ celery_app.conf.update(
     # --- Configuracion de broker y backend ----------------------------------
     broker_connection_retry_on_startup=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# Inicializar logging en cada proceso worker al arrancar
+# ---------------------------------------------------------------------------
+
+@worker_process_init.connect
+def _init_worker_logging(**kwargs):
+    """
+    Se ejecuta una vez cuando cada proceso worker de Celery arranca.
+    Garantiza que el sistema de logging este configurado correctamente
+    en el proceso worker (separado del proceso FastAPI).
+    """
+    from app.core.logging_config import get_logger, setup_logging
+    setup_logging(debug=settings.DEBUG)
+    logger = get_logger(__name__)
+    logger.info(
+        "Celery worker proceso iniciado | concurrency=%d | debug=%s",
+        settings.CELERY_WORKER_CONCURRENCY, settings.DEBUG,
+    )

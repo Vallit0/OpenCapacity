@@ -16,12 +16,13 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.api.dependencies import get_redis, require_circuit
 from app.config import settings
+from app.core.logging_config import get_logger
 from app.models.schemas import HostingCapacityRequest
 from app.tasks.hosting_task import calculate_hosting_capacity
 
+logger = get_logger(__name__)
 router = APIRouter()
 
-# Factor de estimacion: ~9.45 segundos por combinacion barra-fase (hardware medio)
 _SECONDS_PER_COMBINATION = 9.45
 
 
@@ -31,13 +32,10 @@ def start_hosting_capacity(circuit_id: str, body: HostingCapacityRequest):
     Inicia el calculo de hosting capacity para todas las barras del circuito.
     La operacion es asincronica: retorna un task_id con 202 Accepted.
     Usar GET /api/v1/tasks/{task_id}/status para monitorear el progreso.
-
-    Tiempo esperado: 3-15 minutos para IEEE 13 Nodos.
     """
     r = get_redis()
     circuit_data = require_circuit(circuit_id, r)
 
-    # Estimar total de combinaciones para el progreso
     buses_phases_raw = r.get(f"circuit:{circuit_id}:buses_phases")
     buses_phases: dict = json.loads(buses_phases_raw) if buses_phases_raw else {}
 
@@ -47,7 +45,12 @@ def start_hosting_capacity(circuit_id: str, body: HostingCapacityRequest):
     )
     estimated_seconds = int(math.ceil(total_combinations * _SECONDS_PER_COMBINATION))
 
-    # Encolar la tarea Celery
+    logger.info(
+        "HOSTING_CAPACITY iniciando | circuit_id=%s | buses=%d | combinaciones=%d | max_kw=%.0f | est=%ds",
+        circuit_id, len(target_buses), total_combinations,
+        min(body.max_power_kw, settings.MAX_POWER_KW_LIMIT), estimated_seconds,
+    )
+
     task = calculate_hosting_capacity.apply_async(
         kwargs={
             "circuit_id": circuit_id,
@@ -62,6 +65,11 @@ def start_hosting_capacity(circuit_id: str, body: HostingCapacityRequest):
     )
     task_id = task.id
     created_at = datetime.datetime.utcnow().isoformat() + "Z"
+
+    logger.info(
+        "HOSTING_CAPACITY encolada | circuit_id=%s | task_id=%s | combinaciones=%d",
+        circuit_id, task_id, total_combinations,
+    )
 
     return {
         "task_id": task_id,
@@ -80,11 +88,16 @@ def get_hosting_capacity(circuit_id: str):
     Retorna los resultados del ultimo calculo completado de hosting capacity.
     Retorna 404 si el calculo no se ha realizado aun.
     """
+    logger.info("GET hosting_capacity | circuit_id=%s", circuit_id)
+
     r = get_redis()
     require_circuit(circuit_id, r)
 
     results_raw = r.get(f"hosting_capacity:{circuit_id}:results")
     if not results_raw:
+        logger.warning(
+            "GET hosting_capacity | circuit_id=%s | sin resultados (no calculado)", circuit_id
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
@@ -102,7 +115,6 @@ def get_hosting_capacity(circuit_id: str):
         r.get(f"hosting_capacity:{circuit_id}:calculated_at") or ""
     )
 
-    # Construir pivot: {bus: {phase: max_gd_kw}}
     pivot: dict = {}
     for entry in results:
         if entry.get("max_gd_kw") is not None:
@@ -110,7 +122,6 @@ def get_hosting_capacity(circuit_id: str):
             phase = str(entry["phase"])
             pivot.setdefault(bus, {})[phase] = entry["max_gd_kw"]
 
-    # Resumen estadistico
     valid_kws = [e["max_gd_kw"] for e in results if e.get("max_gd_kw") is not None]
     summary: dict = {"total_combinations": len(results)}
     if valid_kws:
@@ -123,6 +134,12 @@ def get_hosting_capacity(circuit_id: str):
                 "least_constrained_bus": _bus_with_max(results),
             }
         )
+
+    logger.info(
+        "GET hosting_capacity OK | circuit_id=%s | combinaciones=%d | validas=%d | max_kw=%s",
+        circuit_id, len(results), len(valid_kws),
+        round(max(valid_kws), 1) if valid_kws else "N/A",
+    )
 
     return {
         "circuit_id": circuit_id,
@@ -138,11 +155,16 @@ def get_hosting_capacity_bus(circuit_id: str, bus: str):
     """
     Retorna el hosting capacity para una barra especifica, con detalle por fase.
     """
+    logger.info("GET hosting_capacity bus | circuit_id=%s | bus=%s", circuit_id, bus)
+
     r = get_redis()
     require_circuit(circuit_id, r)
 
     results_raw = r.get(f"hosting_capacity:{circuit_id}:results")
     if not results_raw:
+        logger.warning(
+            "GET hosting_capacity bus | circuit_id=%s | bus=%s | sin resultados", circuit_id, bus
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
@@ -155,6 +177,9 @@ def get_hosting_capacity_bus(circuit_id: str, bus: str):
     bus_results = [r_item for r_item in results if r_item["bus"] == bus]
 
     if not bus_results:
+        logger.warning(
+            "GET hosting_capacity bus | circuit_id=%s | bus=%s NOT FOUND en resultados", circuit_id, bus
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
@@ -171,6 +196,11 @@ def get_hosting_capacity_bus(circuit_id: str, bus: str):
         }
         for entry in bus_results
     ]
+
+    logger.info(
+        "GET hosting_capacity bus OK | circuit_id=%s | bus=%s | fases=%d",
+        circuit_id, bus, len(phases),
+    )
 
     return {
         "circuit_id": circuit_id,

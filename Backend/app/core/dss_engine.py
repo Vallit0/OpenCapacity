@@ -13,9 +13,14 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from typing import Dict, List, Optional, Tuple
 
 import opendssdirect as dss
+
+from app.core.logging_config import get_logger
+
+_logger = get_logger(__name__)
 
 
 class DSSEngineError(Exception):
@@ -43,7 +48,10 @@ class DSSEngine:
 
     def __init__(self) -> None:
         self._dss = dss
+        _logger.debug("DSSEngine.init | llamando Basic.Start(0)")
+        t0 = time.perf_counter()
         self._dss.Basic.Start(0)
+        _logger.debug("DSSEngine.init | Basic.Start(0) completado | %.0f ms", (time.perf_counter() - t0) * 1000)
         self._circuit_loaded: bool = False
 
     # ------------------------------------------------------------------
@@ -63,17 +71,17 @@ class DSSEngine:
             CircuitDidNotConvergeError: si el solucionador no converge.
             DSSEngineError: para cualquier otro fallo del motor.
         """
+        _logger.debug("load_circuit | inicio | linecodes=%s | dss_size=%d bytes", bool(linecodes_content), len(dss_content))
         temp_dir = tempfile.mkdtemp(prefix="dss_circuit_")
         try:
+            t0 = time.perf_counter()
             processed = _preprocess(dss_content)
+            _logger.debug("load_circuit | preprocesamiento OK | %.0f ms", (time.perf_counter() - t0) * 1000)
 
             if linecodes_content:
                 lc_path = os.path.join(temp_dir, "linecodes.dss")
                 with open(lc_path, "w", encoding="utf-8") as f:
                     f.write(linecodes_content)
-                # LineCodes requieren un circuito activo en OpenDSS.
-                # Insertar el redirect DESPUES del bloque "New Circuit.xxx"
-                # (incluyendo sus lineas de continuacion "~ ...").
                 circuit_block_re = re.compile(
                     r'(^\s*new\s+circuit\b[^\n]*(?:\n\s*~[^\n]*)*)',
                     re.IGNORECASE | re.MULTILINE,
@@ -84,27 +92,47 @@ class DSSEngine:
                     count=1,
                 )
                 if n_subs == 0:
-                    # Fallback: no se encontro "New Circuit" — prepend
                     processed = f"Redirect {lc_path}\n" + processed
+                _logger.debug("load_circuit | linecodes insertados | subs=%d", n_subs)
 
             main_path = os.path.join(temp_dir, "circuit.dss")
             with open(main_path, "w", encoding="utf-8") as f:
                 f.write(processed)
+            _logger.debug("load_circuit | archivos temporales escritos | dir=%s", temp_dir)
 
+            t1 = time.perf_counter()
+            _logger.debug("load_circuit | ejecutando: dss.Text.Command('Clear')")
             self._dss.Text.Command("Clear")
+            _logger.debug("load_circuit | Clear OK | %.0f ms", (time.perf_counter() - t1) * 1000)
+
+            t2 = time.perf_counter()
+            _logger.debug("load_circuit | ejecutando: Compile %s", main_path)
             self._dss.Text.Command(f"Compile {main_path}")
+            _logger.debug("load_circuit | Compile OK | %.0f ms", (time.perf_counter() - t2) * 1000)
+
             self._dss.Text.Command("Set MaxIter=100")
             self._dss.Text.Command("Set Tolerance=0.0001")
+
+            t3 = time.perf_counter()
+            _logger.debug("load_circuit | ejecutando: Solution.Solve()")
             self._dss.Solution.Solve()
+            _logger.debug("load_circuit | Solve() completado | %.0f ms", (time.perf_counter() - t3) * 1000)
 
             if not self._dss.Solution.Converged():
+                _logger.warning("load_circuit | NO CONVERGIO")
                 raise CircuitDidNotConvergeError(
                     "El circuito no convergio. "
                     "Verifique que tenga una fuente definida y cargas validas."
                 )
 
             self._circuit_loaded = True
-            return self._get_circuit_info()
+            info = self._get_circuit_info()
+            _logger.debug(
+                "load_circuit | OK | nombre=%s | buses=%d | elementos=%d | total=%.0f ms",
+                info.get("name"), info.get("num_buses"), info.get("num_elements"),
+                (time.perf_counter() - t0) * 1000,
+            )
+            return info
 
         except (CircuitDidNotConvergeError, DSSEngineError):
             raise
@@ -300,10 +328,16 @@ class DSSEngine:
                 f"kV={kv_ln:.3f} kW={power_kw} kvar={power_kvar} Model=1"
             )
 
+        _logger.debug("apply_gd | cmd=%s", cmd)
         self._dss.Text.Command(cmd)
+
+        t0 = time.perf_counter()
+        _logger.debug("apply_gd | ejecutando Solve()")
         self._dss.Text.Command("Solve")
+        _logger.debug("apply_gd | Solve() completado | %.0f ms", (time.perf_counter() - t0) * 1000)
 
         if not self._dss.Solution.Converged():
+            _logger.warning("apply_gd | NO CONVERGIO | bus=%s | power_kw=%s", bus, power_kw)
             raise CircuitDidNotConvergeError(
                 f"El circuito no convergio con GD de {power_kw} kW en barra {bus}."
             )

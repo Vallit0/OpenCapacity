@@ -17,7 +17,10 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from app.config import settings
 from app.core.dss_engine import DSSEngine, CircuitDidNotConvergeError
+from app.core.logging_config import get_logger, log_timer
 from app.tasks.celery_app import celery_app
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -50,18 +53,32 @@ def calculate_hosting_capacity(
     Actualiza el estado de la tarea Celery con progreso en tiempo real.
     Guarda resultados parciales en Redis ante SoftTimeLimitExceeded.
     """
-    engine = DSSEngine()
-    engine.load_circuit(dss_content, linecodes_content)
+    task_id = self.request.id
+    logger.info(
+        "TASK START calculate_hosting_capacity | task_id=%s | circuit_id=%s | max_kw=%.0f | "
+        "check_v=%s check_i=%s check_p=%s",
+        task_id, circuit_id, max_power_kw,
+        check_voltage, check_current, check_power,
+    )
+
+    with log_timer(logger, "cargar_circuito_worker", circuit_id=circuit_id):
+        engine = DSSEngine()
+        engine.load_circuit(dss_content, linecodes_content)
 
     barras = target_buses or list(engine._dss.Circuit.AllBusNames())
     results: List[dict] = []
     completed_combinations = 0
 
-    # Calcular total de combinaciones para barra de progreso
     total_combinations = 0
     for bus in barras:
         engine._dss.Circuit.SetActiveBus(bus)
         total_combinations += len(engine._dss.Bus.Nodes())
+
+    logger.info(
+        "TASK INFO | task_id=%s | circuit_id=%s | buses=%d | combinaciones_total=%d | est=%.0f min",
+        task_id, circuit_id, len(barras), total_combinations,
+        total_combinations * 9.45 / 60,
+    )
 
     start_time = time.time()
 
@@ -69,6 +86,13 @@ def calculate_hosting_capacity(
         engine._dss.Circuit.SetActiveBus(bus)
         nodes = sorted(engine._dss.Bus.Nodes())
         kv_ln = engine._dss.Bus.kVBase()
+
+        logger.debug(
+            "TASK bus | task_id=%s | circuit_id=%s | bus=%s | fases=%s | kv_base=%.3f",
+            task_id, circuit_id, bus, nodes, kv_ln,
+        )
+
+        bus_start = time.time()
 
         for phase in nodes:
             try:
@@ -95,6 +119,11 @@ def calculate_hosting_capacity(
                     max_kw=max_kw,
                 )
 
+                logger.debug(
+                    "binary_search OK | task_id=%s | bus=%s | fase=%d | max_gd_kw=%.1f | limiting=%s",
+                    task_id, bus, phase, max_kw, limiting,
+                )
+
                 results.append(
                     {
                         "bus": bus,
@@ -105,11 +134,18 @@ def calculate_hosting_capacity(
                 )
 
             except SoftTimeLimitExceeded:
+                logger.warning(
+                    "TASK TIMEOUT | task_id=%s | circuit_id=%s | guardando %d resultados parciales",
+                    task_id, circuit_id, len(results),
+                )
                 _save_partial_results(circuit_id, results)
                 raise
 
             except Exception as exc:
-                # Error en una combinacion especifica: registrar y continuar
+                logger.error(
+                    "binary_search ERROR | task_id=%s | bus=%s | fase=%d | %s: %s",
+                    task_id, bus, phase, type(exc).__name__, exc,
+                )
                 results.append(
                     {
                         "bus": bus,
@@ -126,7 +162,6 @@ def calculate_hosting_capacity(
                 elapsed, completed_combinations, total_combinations
             )
 
-            # Actualizar estado en Celery (el endpoint /tasks/{id}/status lo lee)
             current_task.update_state(
                 state="PROGRESS",
                 meta={
@@ -144,9 +179,30 @@ def calculate_hosting_capacity(
                 },
             )
 
-        # Checkpointing cada 5 barras para no perder todo en caso de fallo
+        bus_elapsed_ms = round((time.time() - bus_start) * 1000)
+        logger.info(
+            "TASK bus DONE | task_id=%s | circuit_id=%s | bus=%s | fases=%d | %.0f ms | "
+            "progreso=%d/%d (%.0f%%)",
+            task_id, circuit_id, bus, len(nodes), bus_elapsed_ms,
+            completed_combinations, total_combinations,
+            completed_combinations / total_combinations * 100,
+        )
+
         if bus_idx % 5 == 0 and results:
             _save_partial_results(circuit_id, results)
+            logger.debug(
+                "TASK checkpoint | task_id=%s | circuit_id=%s | guardados=%d resultados",
+                task_id, circuit_id, len(results),
+            )
+
+    total_elapsed = round(time.time() - start_time)
+    errors = sum(1 for r in results if r.get("error"))
+
+    logger.info(
+        "TASK DONE calculate_hosting_capacity | task_id=%s | circuit_id=%s | "
+        "combinaciones=%d | errores=%d | elapsed=%ds",
+        task_id, circuit_id, len(results), errors, total_elapsed,
+    )
 
     return {
         "circuit_id": circuit_id,
@@ -179,18 +235,24 @@ def run_simulation(
     Tarea para simulacion puntual con GD. Se usa cuando la simulacion sincronica
     excede el timeout del worker ASGI (circuitos muy grandes).
     """
-    engine = DSSEngine()
-    engine.load_circuit(dss_content, linecodes_content)
+    task_id = self.request.id
+    logger.info(
+        "TASK START run_simulation | task_id=%s | circuit_id=%s | bus=%s | fases=%s | power=%.1f kW",
+        task_id, circuit_id, bus, phases, power_kw,
+    )
 
-    base_voltages = engine.get_voltage_profile()
-    base_elements, base_summary = engine.get_losses()
+    with log_timer(logger, "run_simulation_dss", circuit_id=circuit_id, bus=bus, power_kw=power_kw):
+        engine = DSSEngine()
+        engine.load_circuit(dss_content, linecodes_content)
 
-    engine.apply_gd(bus, phases, power_kw, power_kvar)
-    gd_voltages = engine.get_voltage_profile()
-    _, gd_summary = engine.get_losses()
-    violations = engine.check_violations()
+        base_voltages = engine.get_voltage_profile()
+        base_elements, base_summary = engine.get_losses()
 
-    # Construir comparativo de voltajes
+        engine.apply_gd(bus, phases, power_kw, power_kvar)
+        gd_voltages = engine.get_voltage_profile()
+        _, gd_summary = engine.get_losses()
+        violations = engine.check_violations()
+
     base_map = {v["bus_phase"]: v for v in base_voltages}
     comparison = []
     for gd_v in gd_voltages:
@@ -213,6 +275,15 @@ def run_simulation(
         round((gd_kw - base_kw) / base_kw * 100, 2) if base_kw else 0.0
     )
 
+    has_violations = bool(
+        violations.get("voltage") or violations.get("current") or violations.get("power")
+    )
+
+    logger.info(
+        "TASK DONE run_simulation | task_id=%s | circuit_id=%s | violations=%s | losses_delta=%.2f%%",
+        task_id, circuit_id, has_violations, losses_change_pct,
+    )
+
     return {
         "circuit_id": circuit_id,
         "voltage_comparison": comparison,
@@ -223,9 +294,7 @@ def run_simulation(
             "base_kvar": base_summary["total_losses_kvar"],
             "with_gd_kvar": gd_summary["total_losses_kvar"],
             "delta_kvar": round(
-                gd_summary["total_losses_kvar"]
-                - base_summary["total_losses_kvar"],
-                4,
+                gd_summary["total_losses_kvar"] - base_summary["total_losses_kvar"], 4,
             ),
         },
         "violations": violations,
@@ -234,7 +303,7 @@ def run_simulation(
 
 
 # ---------------------------------------------------------------------------
-# Funciones auxiliares (nivel modulo)
+# Funciones auxiliares
 # ---------------------------------------------------------------------------
 
 
@@ -268,7 +337,6 @@ def _binary_search(
         engine._dss.Text.Command("Solve")
 
         if not engine._dss.Solution.Converged():
-            # No convergencia = violacion implicita; bajar potencia
             high = mid - 1
             continue
 
@@ -337,3 +405,4 @@ def _save_partial_results(circuit_id: str, results: list) -> None:
         3600,
         json.dumps(results),
     )
+    logger.debug("partial_results guardados | circuit_id=%s | n=%d", circuit_id, len(results))

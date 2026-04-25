@@ -11,11 +11,12 @@ import datetime
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, status
 
+from app.core.logging_config import get_logger
 from app.tasks.celery_app import celery_app
 
+logger = get_logger(__name__)
 router = APIRouter()
 
-# Mapeo de estados internos de Celery a los estados del contrato REST
 _CELERY_TO_API_STATUS = {
     "PENDING": "queued",
     "RECEIVED": "queued",
@@ -38,20 +39,28 @@ def get_task_status(task_id: str):
     celery_state = result.state
     api_status = _CELERY_TO_API_STATUS.get(celery_state, "queued")
 
+    logger.debug("GET task status | task_id=%s | state=%s (%s)", task_id, celery_state, api_status)
+
     response: dict = {
         "task_id": task_id,
         "status": api_status,
     }
 
     if celery_state == "PENDING":
-        response["position_in_queue"] = None  # Celery no expone la posicion directamente
+        response["position_in_queue"] = None
 
     elif celery_state in ("STARTED", "PROGRESS"):
         meta = result.info or {}
+        progress_pct = meta.get("progress_pct", 0)
+        current_step = meta.get("current_step", "")
+        logger.info(
+            "TASK running | task_id=%s | progress=%d%% | step=%s",
+            task_id, progress_pct, current_step,
+        )
         response.update(
             {
-                "progress_pct": meta.get("progress_pct", 0),
-                "current_step": meta.get("current_step", ""),
+                "progress_pct": progress_pct,
+                "current_step": current_step,
                 "buses_completed": meta.get("buses_completed"),
                 "buses_total": meta.get("buses_total"),
                 "elapsed_seconds": meta.get("elapsed_seconds"),
@@ -62,6 +71,10 @@ def get_task_status(task_id: str):
     elif celery_state == "SUCCESS":
         task_result = result.result or {}
         circuit_id = task_result.get("circuit_id", "")
+        logger.info(
+            "TASK completed | task_id=%s | circuit_id=%s",
+            task_id, circuit_id,
+        )
         response.update(
             {
                 "progress_pct": 100,
@@ -76,6 +89,10 @@ def get_task_status(task_id: str):
 
     elif celery_state == "FAILURE":
         exc = result.result
+        logger.error(
+            "TASK failed | task_id=%s | error=%s",
+            task_id, str(exc) if exc else "desconocido",
+        )
         response.update(
             {
                 "error_code": "ENGINE_ERROR",
@@ -86,6 +103,7 @@ def get_task_status(task_id: str):
         )
 
     elif celery_state == "REVOKED":
+        logger.info("TASK cancelled | task_id=%s", task_id)
         response["cancelled_at"] = datetime.datetime.utcnow().isoformat() + "Z"
 
     return response
@@ -100,6 +118,9 @@ def cancel_task(task_id: str):
     result: AsyncResult = AsyncResult(task_id, app=celery_app)
 
     if result.state in ("SUCCESS", "FAILURE"):
+        logger.warning(
+            "CANCEL rechazada | task_id=%s | ya finalizo con state=%s", task_id, result.state
+        )
         raise HTTPException(
             status_code=400,
             detail={
@@ -113,6 +134,8 @@ def cancel_task(task_id: str):
 
     result.revoke(terminate=True, signal="SIGTERM")
     cancelled_at = datetime.datetime.utcnow().isoformat() + "Z"
+
+    logger.info("TASK cancelada | task_id=%s | state_previo=%s", task_id, result.state)
 
     return {
         "task_id": task_id,
