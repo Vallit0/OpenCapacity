@@ -44,9 +44,6 @@ class DSSEngine:
     def __init__(self) -> None:
         self._dss = dss
         self._dss.Basic.Start(0)
-        # Aumentar tolerancia y max iteraciones para mejor convergencia
-        self._dss.Text.Command = "Set MaxIter=100"
-        self._dss.Text.Command = "Set Tolerance=0.0001"
         self._circuit_loaded: bool = False
 
     # ------------------------------------------------------------------
@@ -70,18 +67,25 @@ class DSSEngine:
         try:
             processed = _preprocess(dss_content)
 
+            lc_path: Optional[str] = None
             if linecodes_content:
                 lc_path = os.path.join(temp_dir, "linecodes.dss")
                 with open(lc_path, "w", encoding="utf-8") as f:
                     f.write(linecodes_content)
-                processed = f"Redirect {lc_path}\n" + processed
 
             main_path = os.path.join(temp_dir, "circuit.dss")
             with open(main_path, "w", encoding="utf-8") as f:
                 f.write(processed)
 
-            self._dss.Text.Command = "Clear"
-            self._dss.Text.Command = f"Compile {main_path}"
+            self._dss.Text.Command("Clear")
+            self._dss.Text.Command(f"Compile {main_path}")
+            # Las definiciones de LineCode requieren circuito activo en versiones
+            # recientes de OpenDSS, por lo que se redirigen despues del Compile.
+            if lc_path:
+                self._dss.Text.Command(f"Redirect {lc_path}")
+            # Solver tuning — debe ir despues de Compile (requiere circuito activo)
+            self._dss.Text.Command("Set MaxIter=100")
+            self._dss.Text.Command("Set Tolerance=0.0001")
             self._dss.Solution.Solve()
 
             if not self._dss.Solution.Converged():
@@ -139,7 +143,7 @@ class DSSEngine:
         results: List[Dict] = []
         for bus in self._dss.Circuit.AllBusNames():
             self._dss.Circuit.SetActiveBus(bus)
-            pu_voltages = self._dss.Bus.puVoltages()
+            pu_voltages = self._dss.Bus.PuVoltage()
             nodes = self._dss.Bus.Nodes()
             for idx, node in enumerate(nodes):
                 real = pu_voltages[2 * idx]
@@ -171,11 +175,13 @@ class DSSEngine:
 
         elements: List[Dict] = []
         for tipo in ["Lines", "Transformers", "Capacitors"]:
-            collection = getattr(self._dss.Circuit, tipo)()
-            # AllNames() puede variar segun la API de opendssdirect; usamos el
-            # iterable que expone cada coleccion segun la version instalada.
+            # En opendssdirect moderno las colecciones son top-level
+            # (dss.Lines, dss.Transformers, ...), no propiedades de Circuit.
+            collection = getattr(self._dss, tipo, None)
+            if collection is None:
+                continue
             try:
-                names = list(self._dss.utils.Iterator(collection, "AllNames"))
+                names = list(collection.AllNames())
             except Exception:
                 names = []
             for name in names:
@@ -287,8 +293,8 @@ class DSSEngine:
                 f"kV={kv_ln:.3f} kW={power_kw} kvar={power_kvar} Model=1"
             )
 
-        self._dss.Text.Command = cmd
-        self._dss.Text.Command = "Solve"
+        self._dss.Text.Command(cmd)
+        self._dss.Text.Command("Solve")
 
         if not self._dss.Solution.Converged():
             raise CircuitDidNotConvergeError(
@@ -299,7 +305,7 @@ class DSSEngine:
         """Elimina el generador GD si existe. Silencioso si no existe."""
         generators = [g.lower() for g in list(self._dss.Generators.AllNames())]
         if "gd" in generators:
-            self._dss.Text.Command = "Remove Generator.GD"
+            self._dss.Text.Command("Remove Generator.GD")
 
     def check_violations(self) -> Dict:
         """
@@ -394,7 +400,7 @@ class DSSEngine:
         return {
             "name": self._dss.Circuit.Name(),
             "num_buses": len(self._dss.Circuit.AllBusNames()),
-            "num_elements": self._dss.Circuit.NumElements(),
+            "num_elements": self._dss.Circuit.NumCktElements(),
             "converged": bool(self._dss.Solution.Converged()),
             "total_power_kw": round(
                 self._dss.Circuit.TotalPower()[0] / 1000, 4

@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(docker compose *)",
+      "Bash(docker build *)",
+      "Bash(docker image ls *)",
+      "Bash(docker run *)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(docker stop *)",
+      "Bash(docker rmi *)",
+      "Bash(docker info *)",
+      "Bash(netstat -ano)",
+      "Bash(curl -s -o /dev/null -w \"Frontend  http://localhost:3001/  → HTTP %{http_code} \\(%{time_total}s\\)\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s -o /dev/null -w \"API       http://localhost:8000/api/v1/health → HTTP %{http_code}\\\\n\" http://localhost:8000/api/v1/health)",
+      "Bash(curl -s -o /dev/null -w \"Flower    http://localhost:5555/ → HTTP %{http_code}\\\\n\" http://localhost:5555/)",
+      "Bash(curl -s http://localhost:8000/api/v1/health)",
+      "Bash(git checkout *)",
+      "Bash(curl -sS -X POST http://localhost:8000/api/v1/circuit/upload -F main_dss=@Referencia/OpenDSS/IEEETestCases/13Bus/IEEE13Nodeckt.dss -F linecodes_dss=@Referencia/OpenDSS/IEEETestCases/13Bus/IEEELineCodes.DSS)",
+      "Bash(curl -sS http://localhost:8000/api/v1/circuit/ckt_11990ec38787/analysis/voltage-profile)",
+      "Bash(curl -s -o /dev/null -w \"GET /import → HTTP %{http_code}\\\\n\" http://localhost:3001/import)",
+      "Bash(curl -s -X OPTIONS http://localhost:8000/api/v1/circuit/upload -H 'Origin: http://localhost:3001' -H 'Access-Control-Request-Method: POST' -i)"
+    ]
+  }
+}
