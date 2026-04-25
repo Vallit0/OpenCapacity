@@ -1,0 +1,123 @@
+# =============================================================================
+# docker-compose.prod.yml — Override de PRODUCCION del stack OpenCapacity
+#
+# Diferencias contra el compose de desarrollo:
+#   - frontend  build con target runner (Next.js standalone, sin npm/node_modules)
+#   - api       sin --reload, 4 workers uvicorn (definidos en el Dockerfile)
+#   - worker    3 replicas (3 calculos de Hosting Capacity en paralelo)
+#   - sin volumenes de codigo, sin Flower, sin polling de archivos
+#   - todas las credenciales via variables de entorno del host (.env en raiz)
+#
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --scale worker=5 -d
+#
+# Requiere: archivo .env en la raiz con SECRET_KEY, POSTGRES_PASSWORD, etc.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Next.js standalone (~150 MB, sin node_modules en runtime)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./Frontend/hostcap
+      target: runner
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+      - WATCHPACK_POLLING=
+      - CHOKIDAR_USEPOLLING=
+    volumes: []
+    command: ["node", "server.js"]
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # API — FastAPI sin hot-reload, multiples workers
+  # ---------------------------------------------------------------------------
+  api:
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_URL=${DATABASE_URL}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      - SECRET_KEY=${SECRET_KEY}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - DEBUG=false
+    volumes: []
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "4"
+      - --timeout-keep-alive
+      - "65"
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # Worker — Celery con OpenDSS, 3 replicas en produccion
+  # ---------------------------------------------------------------------------
+  worker:
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_URL=${DATABASE_URL}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+    volumes: []
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # Redis — limite 2GB con persistencia AOF
+  # ---------------------------------------------------------------------------
+  redis:
+    command: >
+      redis-server
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports: []
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — credenciales del host
+  # ---------------------------------------------------------------------------
+  postgres:
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ports: []
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # Flower deshabilitado en produccion — usar herramienta de monitoreo dedicada
+  # ---------------------------------------------------------------------------
+  flower:
+    profiles: ["disabled"]
+
+volumes:
+  redis_data:
