@@ -1,25 +1,44 @@
 """
 Punto de entrada de la aplicacion FastAPI.
 
-Registra todos los routers, configura CORS y expone el endpoint /health
-con informacion detallada para monitoreo en produccion.
+Registra todos los routers, configura CORS, inicializa el sistema de logging
+y expone el endpoint /health con informacion detallada para monitoreo.
 """
 from __future__ import annotations
 
 import os
 import time
+import uuid
+import logging
 from datetime import datetime, timedelta
 from typing import Dict
 
 import redis as redis_lib
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.api.dependencies import SessionLocal, _engine
 from app.api.routes import analysis, circuit, export, hosting, simulation, tasks
 from app.config import settings
+from app.core.logging_config import get_logger, setup_logging
+
+# ---------------------------------------------------------------------------
+# Inicializar logging antes de todo lo demas
+# ---------------------------------------------------------------------------
+
+setup_logging(debug=settings.DEBUG)
+
+_logger = get_logger(__name__)
+_logger.info(
+    "Iniciando %s v%s | debug=%s | env=%s",
+    settings.APP_TITLE,
+    settings.APP_VERSION,
+    settings.DEBUG,
+    "development" if settings.DEBUG else "production",
+)
 
 # ---------------------------------------------------------------------------
 # Instancia de la aplicacion
@@ -33,6 +52,56 @@ app = FastAPI(
     redoc_url=f"{settings.API_V1_PREFIX}/redoc",
     openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
 )
+
+# ---------------------------------------------------------------------------
+# Middleware de logging HTTP
+# Loggea CADA request/response: metodo, path, status, duracion, request_id.
+# ---------------------------------------------------------------------------
+
+# Paths que no merecen un log completo (reducir ruido)
+_SILENT_PATHS = {"/api/v1/health"}
+
+# Tiempo (ms) a partir del cual se loggea como WARNING
+_SLOW_REQUEST_MS = 3_000
+
+
+@app.middleware("http")
+async def http_logging_middleware(request: Request, call_next) -> Response:
+    request_id = uuid.uuid4().hex[:8]
+    t0 = time.perf_counter()
+
+    client_ip = request.client.host if request.client else "-"
+    path = request.url.path
+    query = f"?{request.url.query}" if request.url.query else ""
+    silent = path in _SILENT_PATHS
+
+    if not silent:
+        _logger.info(
+            ">> %s %s%s | rid=%s | ip=%s",
+            request.method, path, query, request_id, client_ip,
+        )
+
+    response = await call_next(request)
+
+    ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    if not silent:
+        slow_tag = " [SLOW]" if ms > _SLOW_REQUEST_MS else ""
+        level = logging.WARNING if ms > _SLOW_REQUEST_MS or response.status_code >= 500 else logging.INFO
+        _logger.log(
+            level,
+            "<< %s %s %d | %.0f ms%s | rid=%s",
+            request.method, path, response.status_code, ms, slow_tag, request_id,
+        )
+    elif response.status_code >= 400:
+        _logger.warning(
+            "<< %s %s %d | %.0f ms | rid=%s",
+            request.method, path, response.status_code, ms, request_id,
+        )
+
+    response.headers["X-Request-ID"] = request_id
+    return response
+
 
 # ---------------------------------------------------------------------------
 # CORS
@@ -162,7 +231,6 @@ def _check_redis() -> Dict:
         r.ping()
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
-        # Informacion adicional util para monitoreo
         info = r.info("memory")
         used_memory_mb = round(info.get("used_memory", 0) / (1024 * 1024), 2)
         maxmemory_mb = round(info.get("maxmemory", 0) / (1024 * 1024), 2)
@@ -175,6 +243,7 @@ def _check_redis() -> Dict:
             "url": _sanitize_url(settings.REDIS_URL),
         }
     except Exception as exc:
+        _logger.error("health check Redis FAILED | %s", exc)
         return {
             "status": "error",
             "error": str(exc),
@@ -196,12 +265,14 @@ def _check_postgres() -> Dict:
             "url": _sanitize_url(settings.DATABASE_URL),
         }
     except OperationalError as exc:
+        _logger.error("health check Postgres FAILED | %s", exc)
         return {
             "status": "error",
             "error": str(exc),
             "url": _sanitize_url(settings.DATABASE_URL),
         }
     except Exception as exc:
+        _logger.error("health check Postgres FAILED | %s", exc)
         return {
             "status": "error",
             "error": str(exc),
@@ -212,8 +283,7 @@ def _check_postgres() -> Dict:
 def _check_celery() -> Dict:
     """
     Verifica workers Celery activos usando el broker Redis.
-    Retorna status "no_workers" (no "error") si no hay workers levantados —
-    esto es esperado durante el desarrollo antes de levantar los containers.
+    Retorna status "no_workers" (no "error") si no hay workers levantados.
     """
     try:
         from app.tasks.celery_app import celery_app
@@ -222,6 +292,11 @@ def _check_celery() -> Dict:
         active_workers = inspector.active() or {}
         worker_names = list(active_workers.keys())
 
+        if worker_names:
+            _logger.debug("Celery workers activos: %s", worker_names)
+        else:
+            _logger.warning("health check Celery | sin workers activos")
+
         return {
             "status": "ok" if worker_names else "no_workers",
             "active_workers": len(worker_names),
@@ -229,6 +304,7 @@ def _check_celery() -> Dict:
             "broker_url": _sanitize_url(settings.CELERY_BROKER_URL),
         }
     except Exception as exc:
+        _logger.error("health check Celery FAILED | %s", exc)
         return {
             "status": "error",
             "error": str(exc),
@@ -240,5 +316,4 @@ def _sanitize_url(url: str) -> str:
     """Oculta credenciales en URLs para no exponerlas en el health endpoint."""
     import re
 
-    # Reemplazar password en URLs del tipo scheme://user:password@host
     return re.sub(r"(:)[^:@/]+(@)", r"\1****\2", url)
