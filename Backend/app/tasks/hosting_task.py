@@ -198,9 +198,23 @@ def calculate_hosting_capacity(
     total_elapsed = round(time.time() - start_time)
     errors = sum(1 for r in results if r.get("error"))
 
+    # Persistir resultados finales en Redis para que el endpoint GET los lea
+    calculated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    r_client = redis.from_url(settings.REDIS_URL)
+    r_client.setex(
+        f"hosting_capacity:{circuit_id}:results",
+        settings.CIRCUIT_TTL_SECONDS,
+        json.dumps(results),
+    )
+    r_client.setex(
+        f"hosting_capacity:{circuit_id}:calculated_at",
+        settings.CIRCUIT_TTL_SECONDS,
+        calculated_at,
+    )
+
     logger.info(
         "TASK DONE calculate_hosting_capacity | task_id=%s | circuit_id=%s | "
-        "combinaciones=%d | errores=%d | elapsed=%ds",
+        "combinaciones=%d | errores=%d | elapsed=%ds | guardado en Redis OK",
         task_id, circuit_id, len(results), errors, total_elapsed,
     )
 
