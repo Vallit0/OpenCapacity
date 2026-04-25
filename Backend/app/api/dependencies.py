@@ -4,6 +4,7 @@ Dependencias compartidas para los routers de FastAPI.
 Proveen conexiones a Redis y PostgreSQL como dependencias inyectables,
 manteniendo el ciclo de vida de las conexiones correctamente.
 """
+import asyncio
 from typing import Generator
 
 import redis as redis_lib
@@ -15,6 +16,16 @@ from app.config import settings
 from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lock global para OpenDSS
+#
+# opendssdirect tiene afinidad al hilo principal (event loop de asyncio).
+# Todos los endpoints que usan DSSEngine son async def y corren DSS inline
+# en el event loop (sin executor). Este lock serializa accesos concurrentes.
+# ---------------------------------------------------------------------------
+
+dss_lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # PostgreSQL

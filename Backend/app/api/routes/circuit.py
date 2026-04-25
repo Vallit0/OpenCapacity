@@ -12,7 +12,7 @@ import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
-from app.api.dependencies import get_redis, require_circuit
+from app.api.dependencies import get_redis, require_circuit, dss_lock
 from app.config import settings
 from app.core.dss_engine import CircuitDidNotConvergeError, DSSEngine, DSSEngineError
 from app.core.logging_config import get_logger, log_timer
@@ -58,9 +58,15 @@ async def upload_circuit(
         )
 
     try:
-        with log_timer(logger, "compilar_circuito", archivo=main_dss.filename):
-            engine = DSSEngine()
-            circuit_info = engine.load_circuit(dss_content, linecodes_content)
+        async with dss_lock:
+            with log_timer(logger, "compilar_circuito", archivo=main_dss.filename):
+                engine = DSSEngine()
+                circuit_info = engine.load_circuit(dss_content, linecodes_content)
+            with log_timer(logger, "extraer_datos_analisis", archivo=main_dss.filename):
+                buses_phases = engine.get_buses_phases()
+                voltage_profile = engine.get_voltage_profile()
+                lines_info = engine.get_lines_info()
+                elements, losses_summary = engine.get_losses()
     except CircuitDidNotConvergeError as exc:
         logger.warning(
             "UPLOAD FALLIDO | archivo=%s | error=CIRCUIT_DID_NOT_CONVERGE | %s",
@@ -91,15 +97,8 @@ async def upload_circuit(
             },
         ) from exc
 
-    # Obtener todos los datos de analisis mientras el engine esta caliente
-    import json
-    with log_timer(logger, "extraer_datos_analisis", archivo=main_dss.filename):
-        buses_phases = engine.get_buses_phases()
-        voltage_profile = engine.get_voltage_profile()
-        lines_info = engine.get_lines_info()
-        elements, losses_summary = engine.get_losses()
-
     # Persistir en Redis con TTL
+    import json
     circuit_id = f"ckt_{uuid.uuid4().hex[:12]}"
     r = get_redis()
 

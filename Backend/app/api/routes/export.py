@@ -13,7 +13,7 @@ import json
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.api.dependencies import get_redis, require_circuit
+from app.api.dependencies import get_redis, require_circuit, dss_lock
 from app.core.dss_engine import DSSEngine, DSSEngineError
 from app.core.logging_config import get_logger, log_timer
 
@@ -22,7 +22,7 @@ router = APIRouter()
 
 
 @router.get("/{circuit_id}/export/excel")
-def export_excel(
+async def export_excel(
     circuit_id: str,
     include_voltage_profile: bool = Query(True),
     include_losses: bool = Query(True),
@@ -56,13 +56,14 @@ def export_excel(
     circuit_name = circuit_info.get("name", circuit_id)
 
     try:
-        with log_timer(logger, "export_excel_dss", circuit_id=circuit_id):
-            engine = DSSEngine()
-            engine.load_circuit(
-                circuit_data["dss_content"], circuit_data["linecodes_content"]
-            )
-            voltage_profile = engine.get_voltage_profile() if include_voltage_profile else []
-            elements, losses_summary = engine.get_losses() if include_losses else ([], {})
+        async with dss_lock:
+            with log_timer(logger, "export_excel_dss", circuit_id=circuit_id):
+                engine = DSSEngine()
+                engine.load_circuit(
+                    circuit_data["dss_content"], circuit_data["linecodes_content"]
+                )
+                voltage_profile = engine.get_voltage_profile() if include_voltage_profile else []
+                elements, losses_summary = engine.get_losses() if include_losses else ([], {})
     except DSSEngineError as exc:
         logger.error("EXPORT excel FALLIDA | circuit_id=%s | DSSEngineError | %s", circuit_id, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -131,7 +132,7 @@ def export_excel(
 
 
 @router.get("/{circuit_id}/export/json")
-def export_json(circuit_id: str):
+async def export_json(circuit_id: str):
     """
     Exporta todos los resultados disponibles del circuito en formato JSON.
     """
@@ -144,13 +145,14 @@ def export_json(circuit_id: str):
     circuit_info = json.loads(info_raw) if info_raw else {}
 
     try:
-        with log_timer(logger, "export_json_dss", circuit_id=circuit_id):
-            engine = DSSEngine()
-            engine.load_circuit(
-                circuit_data["dss_content"], circuit_data["linecodes_content"]
-            )
-            voltage_profile = engine.get_voltage_profile()
-            elements, losses_summary = engine.get_losses()
+        async with dss_lock:
+            with log_timer(logger, "export_json_dss", circuit_id=circuit_id):
+                engine = DSSEngine()
+                engine.load_circuit(
+                    circuit_data["dss_content"], circuit_data["linecodes_content"]
+                )
+                voltage_profile = engine.get_voltage_profile()
+                elements, losses_summary = engine.get_losses()
     except DSSEngineError as exc:
         logger.error("EXPORT json FALLIDA | circuit_id=%s | DSSEngineError | %s", circuit_id, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

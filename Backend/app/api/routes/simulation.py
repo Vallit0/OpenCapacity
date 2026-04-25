@@ -2,20 +2,20 @@
 Grupo 3 — Simulacion con GD.
 
 POST /{circuit_id}/simulate  Aplica una GD al circuito y retorna analisis comparativo.
+
+NOTA DE ARQUITECTURA: usa run_in_dss_thread para que OpenDSS corra siempre
+en el mismo hilo dedicado (el executor de 1 worker en dependencies.py).
+Esto evita el hang de Text.Command("Compile") causado por la afinidad de hilo
+de opendssdirect cuando upload y simulate usan hilos distintos.
 """
 from __future__ import annotations
 
-import threading
 import uuid
 from typing import List
 
-# OpenDSS tiene estado global — solo un thread puede usarlo a la vez en este proceso.
-# Si llegan dos /simulate al mismo tiempo, el segundo espera a que el primero termine.
-_dss_lock = threading.Lock()
-
 from fastapi import APIRouter, HTTPException
 
-from app.api.dependencies import get_redis, require_circuit
+from app.api.dependencies import get_redis, require_circuit, dss_lock
 from app.core.dss_engine import (
     CircuitDidNotConvergeError,
     DSSEngine,
@@ -29,12 +29,12 @@ router = APIRouter()
 
 
 @router.post("/{circuit_id}/simulate")
-def simulate_gd(circuit_id: str, body: SimulateGDRequest):
+async def simulate_gd(circuit_id: str, body: SimulateGDRequest):
     """
     Aplica una GD al circuito y retorna el analisis comparativo completo:
     comparacion de voltajes antes/despues, variacion de perdidas y violaciones.
 
-    Sincronica — tipicamente 400ms-2s.
+    Tipicamente 400ms-2s. Usa el hilo dedicado de OpenDSS.
     """
     logger.info(
         "SIMULATE | circuit_id=%s | bus=%s | fases=%s | power=%.1f kW | kvar=%.1f",
@@ -69,7 +69,7 @@ def simulate_gd(circuit_id: str, body: SimulateGDRequest):
         requested = set(body.phases)
         if not requested.issubset(set(available)):
             logger.warning(
-                "SIMULATE rechazada | circuit_id=%s | bus=%s | incompatibilidad de fases: solicitadas=%s disponibles=%s",
+                "SIMULATE rechazada | circuit_id=%s | bus=%s | fases solicitadas=%s disponibles=%s",
                 circuit_id, body.bus, sorted(body.phases), available,
             )
             raise HTTPException(
@@ -87,9 +87,8 @@ def simulate_gd(circuit_id: str, body: SimulateGDRequest):
                 },
             )
 
-    logger.debug("SIMULATE esperando lock DSS | circuit_id=%s", circuit_id)
-    with _dss_lock:
-        try:
+    try:
+        async with dss_lock:
             with log_timer(logger, "[1/4] cargar_circuito", circuit_id=circuit_id):
                 engine = DSSEngine()
                 engine.load_circuit(
@@ -108,24 +107,21 @@ def simulate_gd(circuit_id: str, body: SimulateGDRequest):
                 _, gd_summary = engine.get_losses()
                 violations = engine.check_violations()
 
-        except CircuitDidNotConvergeError as exc:
-            logger.error(
-                "SIMULATE FALLIDA | circuit_id=%s | bus=%s | CIRCUIT_DID_NOT_CONVERGE | %s",
-                circuit_id, body.bus, exc,
-            )
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "error": "CIRCUIT_DID_NOT_CONVERGE",
-                    "message": str(exc),
-                },
-            ) from exc
-        except DSSEngineError as exc:
-            logger.error(
-                "SIMULATE FALLIDA | circuit_id=%s | bus=%s | DSSEngineError | %s",
-                circuit_id, body.bus, exc,
-            )
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except CircuitDidNotConvergeError as exc:
+        logger.error(
+            "SIMULATE FALLIDA | circuit_id=%s | bus=%s | CIRCUIT_DID_NOT_CONVERGE | %s",
+            circuit_id, body.bus, exc,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "CIRCUIT_DID_NOT_CONVERGE", "message": str(exc)},
+        ) from exc
+    except DSSEngineError as exc:
+        logger.error(
+            "SIMULATE FALLIDA | circuit_id=%s | bus=%s | DSSEngineError | %s",
+            circuit_id, body.bus, exc,
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     base_map = {v["bus_phase"]: v for v in base_voltages}
     voltage_comparison = []
@@ -153,7 +149,6 @@ def simulate_gd(circuit_id: str, body: SimulateGDRequest):
     i_viol = violations["current"]
     p_viol = violations["power"]
     has_violations = bool(v_viol or i_viol or p_viol)
-
     simulation_id = f"sim_{uuid.uuid4().hex[:12]}"
 
     logger.info(
